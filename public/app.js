@@ -1,9 +1,43 @@
 import { lessons, tips, quiz, reply } from './content.js';
 const app = document.querySelector('#app');
-const page = location.pathname;
+const staticPage = document.documentElement.dataset.staticPage;
+const page = staticPage ?? location.pathname;
 document.querySelectorAll('nav a').forEach(a => {
- if (a.getAttribute('href') === page) a.setAttribute('aria-current','page');
+ const href = a.getAttribute('href');
+ const route = staticPage ? '/' + href.slice(2).replace(/\/$/, '') : href;
+ if (route === page) a.setAttribute('aria-current','page');
 });
+const historyKey = 'cybershield.attempts.v1';
+
+function localAttempts() {
+ return JSON.parse(localStorage.getItem(historyKey) ?? '[]');
+}
+
+async function results(attempt) {
+ if (staticPage) {
+  const recent = localAttempts();
+  if (attempt) {
+   const saved = recent.find(row => row.id === attempt.id);
+   if (saved) return saved;
+   const score = attempt.answers.reduce((sum, answer, i) => sum + Number(answer === quiz[i][2]), 0);
+   const row = { id: attempt.id, score, created_at: new Date().toISOString() };
+   localStorage.setItem(historyKey, JSON.stringify([row, ...recent]));
+   return row;
+  }
+  const scores = recent.map(row => row.score);
+  const count = scores.length;
+  const total = scores.reduce((sum, score) => sum + score, 0);
+  const best = scores.reduce((max, score) => Math.max(max, score), 0);
+  return { count, total, best, average: count ? total / count : 0, recent: recent.slice(0, 10) };
+ }
+ const response = await fetch('/api/results', attempt ? {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(attempt)
+ } : undefined);
+ if (!response.ok) throw new Error('Не удалось получить результаты');
+ return response.json();
+}
 const heading = (title, description) => `<header class="page-heading"><h1>${title}</h1><p>${description}</p></header>`;
 if (page === '/') {
  app.innerHTML = `<section class="home-intro">
@@ -112,9 +146,7 @@ if (page === '/quiz') {
  async function finish() {
   panel.innerHTML = '<p role="status">Сохраняем результат…</p>';
   try {
-   const response = await fetch('/api/results',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,answers})});
-   if (!response.ok) throw Error();
-   const {score} = await response.json();
+   const {score} = await results({id,answers});
    panel.innerHTML = `<h2>Ваш результат — ${score} из 10</h2><p class="score">${score*10}%</p><p>Уровень знаний — ${level(score)}.</p><div class="actions"><button class="button">Пройти повторно</button><a class="button secondary" href="/stats">Статистика</a></div>`;
    panel.querySelector('button').onclick = start;
   } catch {
@@ -125,14 +157,12 @@ if (page === '/quiz') {
  start();
 }
 if (page === '/stats') {
- app.innerHTML = heading('Статистика теста','Общая история прохождений на этом сайте.') + '<div id="results" aria-live="polite"></div>';
+ app.innerHTML = heading('Статистика теста', staticPage ? 'История прохождений в этом браузере.' : 'Общая история прохождений на этом сайте.') + '<div id="results" aria-live="polite"></div>';
  const output = app.querySelector('#results');
  async function show() {
   output.textContent = 'Загружаем статистику…';
   try {
-   const response = await fetch('/api/results');
-   if (!response.ok) throw Error();
-   const { count, average, best, total, recent } = await response.json();
+   const { count, average, best, total, recent } = await results();
    const date = new Intl.DateTimeFormat('ru',{dateStyle:'medium',timeStyle:'short'});
    output.innerHTML = `<div class="metrics">${[['Прохождений',count],['Средний результат',count ? Math.round(average*10)+'%' : '—'],['Лучший результат',count ? best+' / 10' : '—'],['Всего правильных ответов',total]].map(([label,value])=>`<div class="metric"><strong>${value}</strong><p>${label}</p></div>`).join('')}</div><section class="history"><h2>Последние результаты</h2>${recent.length ? `<ul>${recent.map(r=>`<li><time datetime="${r.created_at}">${date.format(new Date(r.created_at))}</time><progress aria-label="Баллы за попытку" value="${r.score}" max="10"></progress><strong>${r.score} из 10</strong></li>`).join('')}</ul>` : '<p>История пока пуста.</p><a class="button" href="/quiz">Пройти тест</a>'}</section>`;
   } catch {
